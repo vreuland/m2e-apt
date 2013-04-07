@@ -11,8 +11,9 @@
 package org.jboss.tools.maven.apt.tests;
 
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
@@ -42,15 +43,15 @@ public class M2eAptProjectconfiguratorTest extends AbstractMavenProjectTestCase 
 	}
 
 	public void testMavenCompilerPluginSupport() throws Exception {
-		defaultTest("p1", "target/generated-sources/annotations");
+		defaultTest("p1", "target/generated-sources/annotations", getHibernateJpaModelGenJars());
 	}
 
 	public void testMavenCompilerPluginDependencies() throws Exception {
-		defaultTest("p2", "target/generated-sources/m2e-apt");
+		defaultTest("p2", "target/generated-sources/m2e-apt", getHibernateJpaModelGenJars());
 	}
 
 	public void testMavenProcessorPluginSupport() throws Exception {
-		defaultTest("p3", "target/generated-sources/apt");
+		defaultTest("p3", "target/generated-sources/apt", getHibernateJpaModelGenJars());
 	}
 	
 	public void testDisabledAnnotationProcessing() throws Exception {
@@ -66,7 +67,13 @@ public class M2eAptProjectconfiguratorTest extends AbstractMavenProjectTestCase 
 		testAnnotationProcessorArguments("p7", expectedOptions);
 	}
 	
-
+	public void testMavenCompilerPluginWithTychoJdtCompilerSupport() throws Exception {
+		Set<String> expectedFactoryPathJars = new HashSet<String>();
+		expectedFactoryPathJars.addAll(getHibernateJpaModelGenJars());
+		expectedFactoryPathJars.addAll(getThychoJdtCompilerJars());
+		defaultTest("p8", "target/generated-sources/annotations", expectedFactoryPathJars);
+	}
+	
 	public void testNoAnnotationProcessor() throws Exception {
 		IProject p = importProject("projects/p0/pom.xml");
 		waitForJobsToComplete();
@@ -226,7 +233,7 @@ public class M2eAptProjectconfiguratorTest extends AbstractMavenProjectTestCase 
 		}
 	}
 	
-	private void defaultTest(String projectName, String expectedOutputFolder) throws Exception {
+	private void defaultTest(String projectName, String expectedOutputFolder, Set<String> expectedFactoryPathJars) throws Exception {
 
 		IProject p = importProject("projects/"+projectName+"/pom.xml");
 		waitForJobsToComplete();
@@ -240,16 +247,8 @@ public class M2eAptProjectconfiguratorTest extends AbstractMavenProjectTestCase 
 		assertTrue("Annotation processing is disabled for "+p, AptConfig.isEnabled(javaProject));
         IFolder annotationsFolder = p.getFolder(expectedOutputFolder);
         assertTrue(annotationsFolder  + " was not generated", annotationsFolder.exists());
-     
-        FactoryPath factoryPath = (FactoryPath) AptConfig.getFactoryPath(javaProject);
-        Iterator<FactoryContainer> ite = factoryPath.getEnabledContainers().keySet().iterator();
-        FactoryContainer jpaModelGen = ite.next();
-        assertEquals(FactoryContainer.FactoryType.VARJAR, jpaModelGen.getType());
-        assertEquals("M2_REPO/org/hibernate/hibernate-jpamodelgen/1.1.1.Final/hibernate-jpamodelgen-1.1.1.Final.jar", jpaModelGen.getId());
 
-        FactoryContainer jpaApi = ite.next();
-        assertEquals(FactoryContainer.FactoryType.VARJAR, jpaApi.getType());
-        assertEquals("M2_REPO/org/hibernate/javax/persistence/hibernate-jpa-2.0-api/1.0.0.Final/hibernate-jpa-2.0-api-1.0.0.Final.jar", jpaApi.getId());
+        checkProjectFactoryPath(javaProject, expectedFactoryPathJars);
 
 		/*
 		There's an ugly bug in Tycho which makes 
@@ -268,23 +267,70 @@ public class M2eAptProjectconfiguratorTest extends AbstractMavenProjectTestCase 
 		assertNoErrors(p);
 	}
 	
-	 protected void updateProject(IProject project) throws Exception {    
+	protected void updateProject(IProject project) throws Exception {    
 	    updateProject(project, null);
-	  }	
+	}	
+
+	protected void updateProject(IProject project, String newPomName)
+			throws Exception {
+
+		if (newPomName != null) {
+			copyContent(project, newPomName, "pom.xml");
+		}
+
+		IProjectConfigurationManager configurationManager = MavenPlugin.getProjectConfigurationManager();
+		ResolverConfiguration configuration = new ResolverConfiguration();
+		configurationManager.enableMavenNature(project, configuration, monitor);
+		configurationManager.updateProjectConfiguration(project, monitor);
+		waitForJobsToComplete();
+		project.build(IncrementalProjectBuilder.INCREMENTAL_BUILD, monitor);
+		waitForJobsToComplete();
+	}
+		
+	/**
+	 * Check that the {@link FactoryPath} of the given {@link IJavaProject} contains the expected
+	 * dependencies (jars)
+	 * 
+	 * @param javaProject the  {@link IJavaProject} to check
+	 * @param expectedJars the set of {@link FactoryContainer} ids (jars) that should be present the java project's
+	 *  {@link FactoryPath}
+	 */
+	private void checkProjectFactoryPath(IJavaProject javaProject, Set<String> expectedJars) {
+		FactoryPath factoryPath = (FactoryPath) AptConfig.getFactoryPath(javaProject);
+		Set<String> expectedJarsFound = new HashSet<String>();
+		
+		for (FactoryContainer factoryContainer: factoryPath.getEnabledContainers().keySet()) {
+			assertEquals(FactoryContainer.FactoryType.VARJAR, factoryContainer.getType());
+			assertTrue(factoryContainer.getId() + " was not expected to be found in factory path", expectedJars.contains(factoryContainer.getId()));
+			expectedJarsFound.add(factoryContainer.getId());
+		}
+
+        if (expectedJarsFound.size() != expectedJars.size()) {
+        	Set<String> copyOfExpectedJars = new HashSet<String>(expectedJars);
+        	fail("Expected jars not found in factory path: " + copyOfExpectedJars.removeAll(expectedJarsFound));
+        }
+	}
 	
-	 protected void updateProject(IProject project, String newPomName) throws Exception {    
-		    
-	    if (newPomName != null) {
-	      copyContent(project, newPomName, "pom.xml");
-	    }
-	    
-	    IProjectConfigurationManager configurationManager = MavenPlugin.getProjectConfigurationManager();
-	    ResolverConfiguration configuration = new ResolverConfiguration();
-	    configurationManager.enableMavenNature(project, configuration, monitor);
-	    configurationManager.updateProjectConfiguration(project, monitor);
-	    waitForJobsToComplete();
-	    project.build(IncrementalProjectBuilder.INCREMENTAL_BUILD, monitor);
-	    waitForJobsToComplete();
-	  }	
+	private Set<String> getHibernateJpaModelGenJars() {
+		Set<String> jars = new HashSet<String>();
+		jars.add("M2_REPO/org/hibernate/hibernate-jpamodelgen/1.1.1.Final/hibernate-jpamodelgen-1.1.1.Final.jar");
+		jars.add("M2_REPO/org/hibernate/javax/persistence/hibernate-jpa-2.0-api/1.0.0.Final/hibernate-jpa-2.0-api-1.0.0.Final.jar");
+		return jars;
+	}
+
+	private Set<String> getThychoJdtCompilerJars() {
+		Set<String> jars = new HashSet<String>();
+		jars.add("M2_REPO/org/eclipse/tycho/tycho-compiler-jdt/0.15.0/tycho-compiler-jdt-0.15.0.jar");
+		jars.add("M2_REPO/org/eclipse/tycho/org.eclipse.jdt.core/3.8.1.v20120502-0834/org.eclipse.jdt.core-3.8.1.v20120502-0834.jar");
+		jars.add("M2_REPO/org/eclipse/tycho/org.eclipse.jdt.compiler.apt/1.0.500.v20120423-0553/org.eclipse.jdt.compiler.apt-1.0.500.v20120423-0553.jar");
+		jars.add("M2_REPO/org/codehaus/plexus/plexus-compiler-api/1.8.1/plexus-compiler-api-1.8.1.jar");
+		jars.add("M2_REPO/org/codehaus/plexus/plexus-utils/1.5.5/plexus-utils-1.5.5.jar");
+		jars.add("M2_REPO/org/codehaus/plexus/plexus-component-annotations/1.5.5/plexus-component-annotations-1.5.5.jar");
+		jars.add("M2_REPO/org/sonatype/sisu/sisu-inject-plexus/1.4.2/sisu-inject-plexus-1.4.2.jar");
+		jars.add("M2_REPO/org/codehaus/plexus/plexus-classworlds/2.2.3/plexus-classworlds-2.2.3.jar");
+		jars.add("M2_REPO/org/sonatype/sisu/sisu-inject-bean/1.4.2/sisu-inject-bean-1.4.2.jar");
+		jars.add("M2_REPO/org/sonatype/sisu/sisu-guice/2.1.7/sisu-guice-2.1.7-noaop.jar");
+		return jars;
+	}
 	
 }
